@@ -1,112 +1,172 @@
 import discord
 from discord.ext import commands
-from pytube import YouTube
+from discord import app_commands
 import os
-from dotenv import load_dotenv
 import asyncio
+import yt_dlp
+from dotenv import load_dotenv
+import urllib.parse, urllib.request, re
 
-load_dotenv()
-TOKEN = os.getenv('DISCORD_TOKEN')
+def run():
+    load_dotenv()
+    TOKEN = os.getenv('DISCORD_TOKEN')
+    intents = discord.Intents.default()
+    intents.message_content = True
+    client = commands.Bot(command_prefix="!", intents=intents)
 
-# Inicializar o bot
-intents = discord.Intents.default()
-intents.message_content = True
-bot = commands.Bot(command_prefix='!', intents=intents)
+    # Lista de comandos para o autocomplete
+    COMMAND_LIST = ["play", "stop", "pause", "resume", 
+                    "queue", "clear_queue", "skip", "help-me"]
 
-ffmpeg_options = {
-    'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
-    'options': '-vn',
-}
+    queues = {}
+    voice_clients = {}
+    youtube_base_url = 'https://www.youtube.com/'
+    youtube_results_url = youtube_base_url + 'results?'
+    youtube_watch_url = youtube_base_url + 'watch?v='
+    yt_dl_options = {"format": "bestaudio/best"}
+    ytdl = yt_dlp.YoutubeDL(yt_dl_options)
 
-queue = []
+    ffmpeg_options = {'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5','options': '-vn -filter:a "volume=0.5"'}
 
-async def play_music(ctx, url):
-    voice_channel = ctx.author.voice.channel
-    if not voice_channel:
-        await ctx.send("Você precisa estar em um canal de voz para usar este comando.")
-        return
+    # Comando com dropdown (autocomplete)
+    @client.tree.command(name="comando", description="Comando com suporte a autocomplete")
+    async def comando(interaction: discord.Interaction, option: str):
+        await interaction.response.send_message(f"Escolheste: {option}", ephemeral=True)
 
-    # Conectar ao canal de voz
-    if not ctx.voice_client:
-        voice_client = await voice_channel.connect()
-    else:
-        voice_client = ctx.voice_client
+    # Função de autocomplete para o comando
+    @comando.autocomplete("option")
+    async def autocomplete_option(interaction: discord.Interaction, current: str):
+        # Filtra a lista de comandos com base no que o utilizador digitou
+        suggestions = [cmd for cmd in COMMAND_LIST if current.lower() in cmd.lower()]
+        # Retorna até 25 opções (limite da API do Discord)
+        return [app_commands.Choice(name=cmd, value=cmd) for cmd in suggestions[:25]]
 
-    # Usando o Pytube para pegar o áudio do vídeo
-    yt = YouTube(url)
-    audio_stream = yt.streams.filter(only_audio=True).first()
 
-    # Caminho para salvar o arquivo de áudio temporário
-    audio_file = f"{yt.title}.mp4"
-    audio_stream.download(filename=audio_file)
+    @client.event
+    async def on_ready():
+        print(f'{client.user} is now jamming')
 
-    # Usando FFmpeg para reproduzir o áudio no Discord
-    audio_source = discord.FFmpegPCMAudio(audio_file, **ffmpeg_options)
-    
-    # Se já está tocando, adiciona à fila, senão começa a tocar
-    if voice_client.is_playing():
-        queue.append(audio_source)
-        await ctx.send(f"Música adicionada à fila: {yt.title}")
-    else:
-        voice_client.play(audio_source, after=lambda e: asyncio.run_coroutine_threadsafe(after_play(ctx), bot.loop))
-        await ctx.send(f"Tocando agora: {yt.title}")
+    async def play_next(ctx):
+        if queues[ctx.guild.id]:  # Verifica se há músicas na fila
+            link = queues[ctx.guild.id].pop(0)
+            await play(ctx, link=link)
+        else:
+            # Se a fila estiver vazia, desconecta o bot
+            await ctx.guild.voice_client.disconnect()
+            del voice_clients[ctx.guild.id]
+            await ctx.send("Não há mais músicas na fila. Desconectando...")
 
-async def after_play(ctx):
-    if queue:
-        next_song = queue.pop(0)
-        voice_client = ctx.voice_client
-        voice_client.play(next_song, after=lambda e: asyncio.run_coroutine_threadsafe(after_play(ctx), bot.loop))
+                
+    @client.command(name="play")
+    async def play(ctx, *, link):
+        try:
+            # Verifica se já há uma música tocando no servidor
+            if ctx.guild.id in voice_clients and voice_clients[ctx.guild.id].is_playing():
+                # Se já houver música tocando, adiciona à fila
+                if ctx.guild.id not in queues:
+                    queues[ctx.guild.id] = []
+                queues[ctx.guild.id].append(link)
+                await ctx.send(f"```Adicionada à fila:``` {link}")
+                return
+            
+            # Caso não haja música tocando, conecta ao canal de voz
+            voice_client = await ctx.author.voice.channel.connect()
+            voice_clients[voice_client.guild.id] = voice_client
+        except Exception as e:
+            print(e)
 
-@bot.command(name='play')
-async def play(ctx, url):
-    if url:
-        await play_music(ctx, url)
-    else:
-        await ctx.send("Por favor, forneça um link de música.")
+        try:
+            # Se o link não for uma URL do YouTube, faz uma pesquisa
+            if youtube_base_url not in link:
+                await ctx.send(f"```Searching the top matches for: {link}```")  # Feedback ao usuário sobre a pesquisa
+                query_string = urllib.parse.urlencode({'search_query': link})
+                content = urllib.request.urlopen(youtube_results_url + query_string)
+                search_results = re.findall(r'/watch\?v=(.{11})', content.read().decode())
+                link = youtube_watch_url + search_results[0]  # Pega o primeiro resultado
+                await ctx.send(f"Now playing: {link}")  # Feedback com o link do vídeo que será tocado
 
-@bot.command(name='pause')
-async def pause(ctx):
-    if ctx.voice_client:
-        ctx.voice_client.pause()
-        await ctx.send("Música pausada.")
-    else:
-        await ctx.send("Não há música tocando no momento.")
+            # Extrai o URL do áudio com yt-dlp
+            loop = asyncio.get_event_loop()
+            data = await loop.run_in_executor(None, lambda: ytdl.extract_info(link, download=False))
 
-@bot.command(name='resume')
-async def resume(ctx):
-    if ctx.voice_client:
-        ctx.voice_client.resume()
-        await ctx.send("Música retomada.")
-    else:
-        await ctx.send("Não há música tocando no momento.")
+            song = data['url']
+            player = discord.FFmpegOpusAudio(song, **ffmpeg_options)
 
-@bot.command(name='stop')
-async def stop(ctx):
-    if ctx.voice_client:
-        await ctx.voice_client.disconnect()
-        await ctx.send("Música parada e desconectado do canal.")
-    else:
-        await ctx.send("Não estou tocando música.")
+            # Reproduz a música imediatamente
+            voice_clients[ctx.guild.id].play(player, after=lambda e: asyncio.run_coroutine_threadsafe(play_next(ctx), client.loop))
+        except Exception as e:
+            print(e)
 
-@bot.command(name='queue')
-async def queue(ctx):
-    if queue:
-        queue_list = '\n'.join([str(i) for i in queue])
-        await ctx.send(f"Fila de músicas:\n{queue_list}")
-    else:
-        await ctx.send("Não há músicas na fila.")
+    @client.command(name="clear_queue")
+    async def clear_queue(ctx):
+        if ctx.guild.id in queues:
+            queues[ctx.guild.id].clear()
+            await ctx.send("```Queue cleared!```")
+        else:
+            await ctx.send("```There is no queue to clear```")
 
-@bot.command(name='help-menu')
-async def help_command(ctx):
-    help_text = """
-    **Comandos do Bot de Música**:
-    - `/play [url]` - Toca música ou vídeo.
-    - `/pause` - Pausa a música.
-    - `/resume` - Retoma a música.
-    - `/stop` - Para a música e desconecta.
-    - `/queue` - Exibe a fila de músicas.
-    """
-    await ctx.send(help_text)
+    @client.command(name="pause")
+    async def pause(ctx):
+        try:
+            voice_clients[ctx.guild.id].pause()
+        except Exception as e:
+            print(e)
 
-# Rodar o bot
-bot.run(TOKEN)
+    @client.command(name="resume")
+    async def resume(ctx):
+        try:
+            voice_clients[ctx.guild.id].resume()
+        except Exception as e:
+            print(e)
+
+    @client.command(name="stop")
+    async def stop(ctx):
+        try:
+            voice_clients[ctx.guild.id].stop()
+            await voice_clients[ctx.guild.id].disconnect()
+            del voice_clients[ctx.guild.id]
+        except Exception as e:
+            print(e)
+
+    @client.command(name="queue")
+    async def queue(ctx):
+        # Verifica se o servidor já tem uma fila
+        if ctx.guild.id in queues and len(queues[ctx.guild.id]) > 0:
+            # Exibe as músicas na fila
+            queue_list = "\n".join(queues[ctx.guild.id])
+            await ctx.send(f"```Fila de músicas:\n{queue_list}```")
+        else:
+            await ctx.send("```A fila está vazia.```")
+
+
+    @client.command(name="skip")
+    async def skip(ctx):
+        try:
+            if ctx.guild.id in voice_clients and voice_clients[ctx.guild.id].is_playing():
+                voice_clients[ctx.guild.id].stop()  # Para a música atual
+                await ctx.send("```Skipping to the next track...```")
+                await play_next(ctx)  # Chama a função para tocar a próxima música
+            else:
+                await ctx.send("No music is currently playing!")
+        except Exception as e:
+            print(e)
+
+    @client.command(name="help-me")
+    async def help(ctx):
+
+        help_message = """
+            **🎵 Comandos disponíveis:**
+
+            **1. `!play <link>`** ➡️ Reproduz a música do link que enviaste.
+            **2. `!pause`** ➡️ Dá uma pausa à música. Calma, respira!
+            **3. `!resume`** ➡️ Retoma a música. Bora lá!
+            **4. `!stop`** ➡️ Para tudo. Já queres acabar com a festa?
+            **5. `!skip`** ➡️ Salta esta música. Próxima, por favor!
+            **6. `!queue`** ➡️ Mostra a fila atual. O que vem a seguir, Zé?
+            **7. `!clear_queue`** ➡️ Limpa a fila de músicas. Vamos recomeçar! 🎶
+        """
+
+        await ctx.send(help_message)
+
+
+    client.run(TOKEN)
