@@ -13,7 +13,9 @@ RUN apt-get update && \
 COPY . .
 
 # Instalar dependências do Python do requirements.txt
-# RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install discord
+RUN pip install yt-dlp
+RUN pip install PyNaCl
 
 # Expôr a porta (não necessário para um bot, mas pode ser útil dependendo de como você roda)
 EXPOSE 8080
