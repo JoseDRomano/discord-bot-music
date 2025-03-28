@@ -16,9 +16,6 @@ COPY . .
 # Instalar as dependências do Python do requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Definir as variáveis de ambiente para o bot (caso tenha algum valor sensível)
-COPY .env .env
-
 # Expôr a porta (não necessário para um bot, mas pode ser útil dependendo de como você roda)
 EXPOSE 8080
 
