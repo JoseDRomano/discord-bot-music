@@ -13,7 +13,7 @@ RUN apt-get update && \
 COPY . .
 
 # Instalar dependências do Python do requirements.txt
-RUN pip install --no-cache-dir -r requirements.txt
+# RUN pip install --no-cache-dir -r requirements.txt
 
 # Expôr a porta (não necessário para um bot, mas pode ser útil dependendo de como você roda)
 EXPOSE 8080
