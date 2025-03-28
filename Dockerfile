@@ -1,23 +1,22 @@
-# Usar uma imagem base do Python
+# Usar a imagem base oficial do Python
 FROM python:3.9-slim
 
-# Instalar FFmpeg e dependências
-RUN apt-get update && \
-    apt-get install -y ffmpeg && \
-    apt-get install -y libsndfile1 && \
-    apt-get clean
-
-# Definir o diretório de trabalho dentro do container
+# Definir o diretório de trabalho
 WORKDIR /app
 
-# Copiar os arquivos do projeto para o diretório de trabalho
+# Instalar dependências do sistema
+RUN apt-get update && \
+    apt-get install -y ffmpeg libsndfile1 build-essential && \
+    apt-get clean
+
+# Copiar os arquivos do seu projeto para o container
 COPY . .
 
-# Instalar as dependências do Python do requirements.txt
+# Instalar dependências do Python do requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Expôr a porta (não necessário para um bot, mas pode ser útil dependendo de como você roda)
 EXPOSE 8080
 
-# Comando para rodar o bot (ajustado para o seu main.py)
+# Comando para rodar o bot
 CMD ["python", "main.py"]
