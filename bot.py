@@ -4,11 +4,11 @@ from discord import app_commands
 import os
 import asyncio
 import yt_dlp
-from dotenv import load_dotenv
+# from dotenv import load_dotenv
 import urllib.parse, urllib.request, re
 
 def run():
-    load_dotenv()
+    # load_dotenv()
     TOKEN = os.getenv('DISCORD_TOKEN')
     intents = discord.Intents.default()
     intents.message_content = True
